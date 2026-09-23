@@ -114,6 +114,7 @@ Environment variables (all optional — nothing needs to be preset):
 | `AGENT2API_PANEL_PORT` | Serve the panel (UI + `/api/*`) on its own port; map only the main port publicly to keep the management plane internal (bind the panel port as `127.0.0.1:3066:3066`) |
 | `AGENT2API_HOST` / `AGENT2API_PROXY_PORT` | Listen address (default `0.0.0.0`) / port (default `3065`) |
 | `AGENT2API_ALLOW_NO_KEY` | Set to `1` to serve `/v1` without any key — private networks only |
+| `AGENT2API_CAPTCHA_ENABLED` | Human verification on login / sign-up: leave unset to keep it on (the default), or set `0` to turn it off at deploy time — no need to sign in and flip the settings toggle first (once the toggle has been used, the settings value wins) |
 
 Build from source (the image contains only the gateway and the panel, no Rust toolchain):
 

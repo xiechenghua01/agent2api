@@ -119,6 +119,7 @@ docker compose pull && docker compose up -d
 | `AGENT2API_PANEL_PORT` | 面板分端口：设后面板（界面 + `/api/*`）单独监听该端口，公网只映射主端口即可把管理面留在内网（面板端口绑回环，写 `127.0.0.1:3066:3066`） |
 | `AGENT2API_HOST` / `AGENT2API_PROXY_PORT` | 监听地址（默认 `0.0.0.0`）/ 端口（默认 `3065`） |
 | `AGENT2API_ALLOW_NO_KEY` | 置 `1` 关闭 fail-closed（未配 Key 也放行 `/v1`，仅限纯内网） |
+| `AGENT2API_CAPTCHA_ENABLED` | 登录 / 注册的人机校验：留空 = 默认开启，填 `0` = 关闭。部署时就能关掉，不必先登录进设置页点开关（设置页动过开关则以设置页为准） |
 
 从源码构建（镜像里只有网关与面板，不含 Rust 工具链）：
 

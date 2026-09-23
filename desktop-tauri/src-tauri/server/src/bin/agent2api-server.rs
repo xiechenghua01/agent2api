@@ -26,6 +26,9 @@
 //!   AGENT2API_ADMIN_PASSWORD_HASH 面板管理员密码的 bcrypt 哈希（优先于明文；
 //!                               htpasswd -nBC 10 user 的输出整行可粘）
 //!   AGENT2API_ALLOW_NO_KEY      置 `1` 关闭全部闸门（未配 Key 也放行，纯内网用）
+//!   AGENT2API_CAPTCHA_ENABLED   登录 / 注册的人机校验开关（`1` 开、`0` 关）。
+//!                               不设 = 跟设置页走（默认开）。部署时要关，
+//!                               设 `0` —— 优先级：设置页写入的值 > 本变量 > 默认开
 //!   AGENT2API_VERBOSE           置 `1` 打开 debug 级日志（与桌面一致）
 
 use std::net::{IpAddr, Ipv4Addr};
@@ -147,6 +150,16 @@ fn main() -> ExitCode {
     }
 
     state.set_ui_dir(ui_dir);
+
+    // 人机校验被关掉时启动即提示（与 ALLOW_NO_KEY 同理：用环境变量关掉一道
+    // 防护，日志要留下痕，事后排查「为什么没拦住脚本」能翻到这一行）。
+    if !config::current().captcha_enabled() {
+        logging::log(
+            "[Security]",
+            "⚠️  机器人校验已关闭：登录 / 注册不再需要人机验证（可用设置页开关或 AGENT2API_CAPTCHA_ENABLED 控制）",
+        );
+    }
+
     let shutdown_tx = match start(&state) {
         Ok(tx) => tx,
         Err(conflict) => {

@@ -54,6 +54,23 @@ pub(super) fn env_text(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// 环境变量里的**开关**（部署时用来覆盖配置，如 `AGENT2API_CAPTCHA_ENABLED`）。
+///
+/// 接受 `1` / `0` / `true` / `false`（去空白，大小写不敏感）；空串、未设置、
+/// 其余写法一律返回 `None` =「这个变量没给出信息」，由调用方继续往下走
+/// （配置文件 → 内置默认值，见本文件头的优先级口径）。**不在这里回落默认值**
+/// ——那会让「环境变量写坏了」与「环境变量没配」变得无法区分，而两者的
+/// 处理方式不同：没配是正常情况，写坏应当被忽略而不是悄悄改掉开关。
+///
+/// 与 [`env_text`] 放在一起：两者共同回答「环境变量这一层怎么参与取值」。
+pub(super) fn env_bool(name: &str) -> Option<bool> {
+    match env_text(name)?.as_str() {
+        "1" | "true" => Some(true),
+        "0" | "false" => Some(false),
+        _ => None,
+    }
+}
+
 /// 从原始 JSON 里取非空字符串字段
 pub(super) fn string_field(map: &Map<String, Value>, key: &str) -> Option<String> {
     map.get(key)

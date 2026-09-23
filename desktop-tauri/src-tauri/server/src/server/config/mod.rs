@@ -378,10 +378,15 @@ fn build(raw: Map<String, Value>) -> RuntimeConfig {
             .and_then(Value::as_bool)
             .unwrap_or(true),
         // 只有字面 `false` 算关闭：**默认开**。登录 / 注册的暴破与抢注防护
-        // 宁可多一道不可少一道（见 KEY_CAPTCHA_ENABLED 的说明）
+        // 宁可多一道不可少一道（见 KEY_CAPTCHA_ENABLED 的说明）。
+        // 环境变量 `AGENT2API_CAPTCHA_ENABLED` 走中间那层（见模块头的优先级：
+        // 配置文件 > 环境变量 > 内置默认值）—— 部署 / 容器化时要关掉它，
+        // 在此之前只能登录后进设置页点开关，而那要求先过一次人机验证。
+        // 写坏的变量值（env_bool → None）回落到配置文件，不会静默关掉防护。
         captcha_enabled: raw
             .get(KEY_CAPTCHA_ENABLED)
             .and_then(Value::as_bool)
+            .or_else(|| env_bool("AGENT2API_CAPTCHA_ENABLED"))
             .unwrap_or(true),
         // 系统提示词：模式非法/缺失 → passthrough（默认），文件读不到 → 内置默认
         // + 一条原因（见 `prompt_from`）

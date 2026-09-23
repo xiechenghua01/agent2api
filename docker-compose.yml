@@ -43,6 +43,9 @@ services:
       AGENT2API_ADMIN_PASSWORD: ${AGENT2API_ADMIN_PASSWORD:-}
       # 可选：面板分端口（见文件头说明）。不设则面板与网关同在 3065。
       AGENT2API_PANEL_PORT: ${AGENT2API_PANEL_PORT:-}
+      # 可选：登录 / 注册的人机校验。留空 = 默认开启；填 0 = 关闭（部署时就
+      # 关掉，不必先登录进设置页点开关）。设置页一旦动过开关则以设置页为准。
+      AGENT2API_CAPTCHA_ENABLED: ${AGENT2API_CAPTCHA_ENABLED:-}
       # 可选：AGENT2API_VERBOSE / AGENT2API_ALLOW_NO_KEY / AGENT2API_PROXY_PORT
     volumes:
       # 全部状态（SQLite 库、配置、日志）都在这一个卷里
