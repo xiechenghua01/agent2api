@@ -27,8 +27,13 @@ WORKDIR /build
 ARG HTTP_PROXY=""
 ARG HTTPS_PROXY=""
 
-# TARGETARCH 由 buildx/BuildKit 自动注入：amd64 / arm64。arm64 需要
-# aarch64 的 C 工具链（rusqlite bundled 编 SQLite 的 C 源码用）与链接器。
+# TARGETARCH 必须显式声明成 ARG 才能在下面的 RUN 里可见（buildx 只免声明
+# 用于 FROM --platform=...）。不声明时它展开成空串，`if [ "$TARGETARCH" =
+# "arm64" ]` 永远不成立 —— 交叉编译整段被跳过，两个架构都走原生编译，arm64
+# 镜像里会被塞进 x86-64 二进制（构建仍然全绿，运行时 exec format error）。
+# 这一行漏掉的话，多架构形态只有 amd64 真正可用。
+ARG TARGETARCH
+# arm64 需要 aarch64 的 C 工具链（rusqlite bundled 编 SQLite 的 C 源码用）与链接器。
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
         rustup target add aarch64-unknown-linux-gnu \
         && apt-get update \

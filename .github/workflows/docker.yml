@@ -3,19 +3,25 @@ name: docker
 # 构建 Agent2API 网关镜像并推送到 GitHub Container Registry（GHCR），
 # 随后把仓库里的 docker-compose.yml 同步成刚构建好的镜像版本。
 #
-# ── 版本跟随上游 tag ──────────────────────────────────────────
-# 镜像版本取**上游**（aimod-cc/agent2api）的最新 tag，构建时检出上游该 tag
-# 的源码 —— 镜像内容与上游 tag 严格对应，本 fork 只承担构建与分发的角色。
-# 本仓库是 fork，分支状态可能与上游不一致，所以不拿 fork 的 HEAD 当版本号。
+# ── 版本号取上游 tag，源码取本仓库 ───────────────────────────
+# 镜像版本（镜像 tag 与 compose 里的版本）取上游 aimod-cc/agent2api 的最新
+# tag；而构建用的源码是本仓库检出的那份，不是上游的 —— 只有这样，本仓库对
+# Dockerfile 的修正才真能进镜像，否则每次都被上游原版覆盖回去（上游那份漏了
+# ARG TARGETARCH，会导致 arm64 镜像里装着 x86-64 二进制）。
+#
+# 代价是镜像内容 = 上游 tag 对应的代码 + 本仓库补丁，与上游同 tag 的官方产物
+# 并不等价。prepare 会打印上游 tag 的 commit 与本次构建的 commit，两边不一致
+# 就明说，差异是看得见的。本仓库是 fork，也不该拿 fork 的 HEAD 当版本号。
 #
 # ── 触发方式 ──────────────────────────────────────────────────
 #   · workflow_dispatch：手动触发，可指定 tag、可强制重建
-#   · schedule：每天 03:00 UTC 检查上游是否出了新 tag，有则自动构建
-#   · push：仅当本文件自身改动时（改完工作流立即验证一次）
+#   · schedule：每天 03:00 UTC 检查上游是否出了新 tag，有则构建
+#   · push：改到构建相关文件（工作流 / Dockerfile / 源码）时重建镜像
 #
 # ── 幂等 ──────────────────────────────────────────────────────
-# 构建前先探测 GHCR 上是否已有该版本镜像，已有就跳过构建 —— 定时任务因此
-# 不会重复构建同一个版本（Rust 冷构建约十几分钟）。要重建用 force 输入。
+# 定时与手动触发下，先探测 GHCR 上是否已有该版本镜像，已有就跳过 —— 定时任务
+# 不会每天空跑一次十几分钟的 Rust 编译。但 push 触发一律重建：那次改动本身就
+# 说明构建输入变了，同版本号的旧镜像必须被覆盖掉。要绕开判断用 force 输入。
 #
 # ── 为什么不需要配置任何 secret ───────────────────────────────
 # 推镜像用内置 GITHUB_TOKEN 的 packages: write，提交 compose 用它的
@@ -51,8 +57,15 @@ on:
     - cron: '0 3 * * *'
   push:
     branches: [main]
+    # 只有真正影响镜像内容的改动才重建：工作流本身、Dockerfile、构建上下文
+    # 白名单（见 .dockerignore）里的源码与面板静态文件。README / compose /
+    # 资产图这些不进镜像，改了没必要重编十几分钟。
     paths:
       - '.github/workflows/docker.yml'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'desktop-tauri/src-tauri/**'
+      - 'desktop-tauri/ui/**'
 
 permissions:
   contents: read
@@ -79,6 +92,7 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
           FORCE: ${{ inputs.force }}
+          EVENT: ${{ github.event_name }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -103,12 +117,16 @@ jobs:
             exit 1
           fi
 
-          # tag 指向的 commit：先按 annotated tag 解引用（^{}），拿不到再退回
-          # 直接读（lightweight tag 只有一行）。写进 OCI 的 revision 标签。
-          sha=$(git ls-remote "$upstream_url" "refs/tags/${version}^{}" | cut -f1)
-          if [ -z "$sha" ]; then
-            sha=$(git ls-remote "$upstream_url" "refs/tags/${version}" | cut -f1)
+          # 上游 tag 指向的 commit：先按 annotated tag 解引用（^{}），拿不到
+          # 再退回直接读（lightweight tag 只有一行）。只用于日志对照 —— 实际
+          # 构建的是本仓库的源码，两者不一致要看得见。
+          upstream_sha=$(git ls-remote "$upstream_url" "refs/tags/${version}^{}" | cut -f1)
+          if [ -z "$upstream_sha" ]; then
+            upstream_sha=$(git ls-remote "$upstream_url" "refs/tags/${version}" | cut -f1)
           fi
+
+          # 本次实际构建的 commit = 触发事件检出的那个
+          built_sha="$GITHUB_SHA"
 
           # 镜像名必须是全小写，GITHUB_REPOSITORY 里的 owner 可能带大写。
           # 用 tr 而不是 ${VAR,,}：后者是 bash 4+ 语法，本机 bash 3.2 跑不了，
@@ -133,19 +151,28 @@ jobs:
             exists=false
           fi
 
+          # push 触发一律重建：那次改动本身就说明构建输入变了（源码 /
+          # Dockerfile），即便 GHCR 上已有同版本镜像也得被覆盖。定时与手动
+          # 触发才适用「已有则跳过」的幂等。
           need_build=true
-          if [ "$exists" = true ] && [ "$FORCE" != "true" ]; then
+          if [ "$EVENT" != "push" ] && [ "$exists" = true ] && [ "$FORCE" != "true" ]; then
             need_build=false
           fi
 
           echo "上游最新 tag : $latest"
           echo "本次构建版本 : $version"
+          echo "触发方式     : $EVENT"
           echo "镜像已存在   : $exists"
           echo "需要构建     : $need_build"
+          echo "上游 tag commit  : $upstream_sha"
+          echo "本次构建 commit  : $built_sha"
+          if [ "$upstream_sha" != "$built_sha" ]; then
+            echo "::warning::本次构建的 commit 与上游 ${version} 的 commit 不一致，镜像 = 上游该版本 + 本仓库补丁"
+          fi
 
           {
             echo "version=$version"
-            echo "sha=$sha"
+            echo "sha=$built_sha"
             echo "need_build=$need_build"
             echo "tags<<TAGS_EOF"
             echo "$tags"
@@ -161,13 +188,11 @@ jobs:
       contents: read
       packages: write
     steps:
-      # 检出的必须是上游该 tag 的源码，而不是本 fork 的分支状态 ——
-      # 镜像内容与 tag 严格对应，这一点是这套流程的前提。
-      - name: 检出上游源码
+      # 检出本仓库、而不是上游的 tag —— 版本号虽然取上游，但源码必须用本仓库
+      # 的，否则对 Dockerfile 的修正（例如漏掉 ARG TARGETARCH 导致 arm64 镜像
+      # 里装 x86-64 二进制）永远进不了镜像，会被上游原版覆盖回去。
+      - name: 检出本仓库源码
         uses: actions/checkout@v7
-        with:
-          repository: ${{ env.UPSTREAM }}
-          ref: ${{ needs.prepare.outputs.version }}
 
       - name: 准备 QEMU（运行时阶段 arm64 要跑 apt-get）
         uses: docker/setup-qemu-action@v4
