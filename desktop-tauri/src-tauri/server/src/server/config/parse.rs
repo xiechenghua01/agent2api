@@ -54,21 +54,15 @@ pub(super) fn env_text(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// 环境变量里的**开关**（部署时用来覆盖配置，如 `AGENT2API_CAPTCHA_ENABLED`）。
+/// 登录页人机验证组件环境变量，默认为1开启，0为关闭。
 ///
-/// 接受 `1` / `0` / `true` / `false`（去空白，大小写不敏感）；空串、未设置、
-/// 其余写法一律返回 `None` =「这个变量没给出信息」，由调用方继续往下走
-/// （配置文件 → 内置默认值，见本文件头的优先级口径）。**不在这里回落默认值**
-/// ——那会让「环境变量写坏了」与「环境变量没配」变得无法区分，而两者的
-/// 处理方式不同：没配是正常情况，写坏应当被忽略而不是悄悄改掉开关。
-///
-/// 与 [`env_text`] 放在一起：两者共同回答「环境变量这一层怎么参与取值」。
-pub(super) fn env_bool(name: &str) -> Option<bool> {
-    match env_text(name)?.as_str() {
-        "1" | "true" => Some(true),
-        "0" | "false" => Some(false),
-        _ => None,
-    }
+/// 只有配置里**没有** `captchaEnabled`（设置页从未改过）时才兜底 —— 优先级
+/// 「配置里的值 > 环境变量 > 内置默认」见模块头。除字面 `0` 之外一律按开启
+/// 处理：它是登录 / 注册的防爆破开关，写坏了宁可多一道校验。
+pub(super) fn env_captcha_enabled() -> bool {
+    std::env::var("AGENT2API_CAPTCHA_ENABLED")
+        .map(|value| value.trim() != "0")
+        .unwrap_or(true)
 }
 
 /// 从原始 JSON 里取非空字符串字段
