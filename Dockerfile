@@ -8,8 +8,9 @@
 # ── 多架构：交叉编译而不是 QEMU ─────────────────────────────
 # builder 固定跑在构建机的原生架构（$BUILDPLATFORM）：buildx 构建 arm64
 # 时不进 QEMU 模拟（Rust 编译会慢几十倍），而是 rustup 加一个 aarch64
-# target + 装 aarch64 的 C 工具链交叉编译。转发链路全是 rustls（纯 Rust），
-# 唯一的 C 代码是 rusqlite bundled 的 SQLite 源码，gcc-aarch64 工具链足够。
+# target + 装 aarch64 的 C 工具链交叉编译。出站链路走 rustls（纯 Rust，
+# 不依赖系统 openssl），但依赖树里仍有 C 代码要过交叉工具链：至少 rusqlite
+# bundled 的 SQLite 与 ring（rustls 的 crypto 后端，含 curve25519 等 C 实现）。
 #
 # ── 依赖缓存层 ──────────────────────────────────────────────
 # 先用空的 lib/bin 桩把全部依赖编一遍（首次几分钟），之后只改源码重新
@@ -33,11 +34,15 @@ ARG HTTPS_PROXY=""
 # 镜像里会被塞进 x86-64 二进制（构建仍然全绿，运行时 exec format error）。
 # 这一行漏掉的话，多架构形态只有 amd64 真正可用。
 ARG TARGETARCH
-# arm64 需要 aarch64 的 C 工具链（rusqlite bundled 编 SQLite 的 C 源码用）与链接器。
+# arm64 交叉工具链 + **libc 头文件**：gcc-aarch64-linux-gnu 只是前端，不带
+# /usr/aarch64-linux-gnu/include（Debian 上该目录不存在），少装 libc6-dev-arm64-cross
+# 的话 C 源码编译时报 bits/libc-header-start.h 找不到 —— ring 的 curve25519.c
+# 就是这么挂的。需要 C 代码的不止 rusqlite bundled 的 SQLite，还有 ring。
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
         rustup target add aarch64-unknown-linux-gnu \
         && apt-get update \
-        && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu \
+        && apt-get install -y --no-install-recommends \
+             gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
         && rm -rf /var/lib/apt/lists/*; \
     fi
 # cc / cargo 按这两个变量找交叉工具（只在 arm64 构建时生效；amd64 原生用默认值）
