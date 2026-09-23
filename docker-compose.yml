@@ -30,7 +30,7 @@ services:
   agent2api:
     # 版本号由 .github/workflows/docker.yml 自动同步到上游最新 tag。
     # 钉住具体版本而不是 latest：升级是可预期的，也能随时回退到旧版本。
-    image: ghcr.io/xiechenghua01/agent2api:v2.7.0
+    image: ghcr.io/xiechenghua01/agent2api:v2.7.1
     container_name: agent2api
     restart: unless-stopped
     ports:
