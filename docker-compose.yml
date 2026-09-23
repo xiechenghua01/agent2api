@@ -1,9 +1,20 @@
 # Agent2API 部署（单容器：默认一个 3065 端口，既是管理面板也是 OpenAI 兼容网关）。
 #
-#   docker compose up -d --build
+#   docker compose up -d
 #
 #   面板     http://<主机>:3065    （首次打开注册管理员账号，之后账号密码登录）
 #   网关     http://<主机>:3065/v1 （API Key 在面板「网关 Key」页创建；OpenAI 兼容）
+#
+# ── 镜像从哪来 ──────────────────────────────────────────────
+# 默认拉取 GHCR 上预构建好的镜像，不在本机编译。镜像由
+# .github/workflows/docker.yml 构建：跟随上游 aimod-cc/agent2api 的最新
+# tag，构建完成后自动把下面 image: 的版本号改到该 tag 并提交。
+#
+#   docker compose pull && docker compose up -d    # 手动升级到最新镜像
+#
+# 想从本地源码构建（例如改了代码要自己验证，或 GHCR 不可达）：
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 #
 # 可选：面板分端口（AGENT2API_PANEL_PORT）——设置后管理面（界面 + /api/*）
 # 单独监听该端口，主端口只保留 /v1/* 网关。想把面板留在内网时：在 .env 里
@@ -17,8 +28,9 @@
 
 services:
   agent2api:
-    build: .
-    image: agent2api:local
+    # 版本号由 .github/workflows/docker.yml 自动同步到上游最新 tag。
+    # 钉住具体版本而不是 latest：升级是可预期的，也能随时回退到旧版本。
+    image: ghcr.io/xiechenghua01/agent2api:v2.7.0
     container_name: agent2api
     restart: unless-stopped
     ports:

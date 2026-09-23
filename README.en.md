@@ -84,26 +84,26 @@ print(resp.choices[0].message.content)
 
 ## Docker Deployment
 
+Images are built by this repository's GitHub Actions (`.github/workflows/docker.yml`) and pushed to GHCR, versioned after the latest tag of upstream `aimod-cc/agent2api`; amd64 and arm64 both available. Packages default to public alongside a public repository, so pulling needs no credentials.
+
 ```bash
 docker run -d --name agent2api --restart unless-stopped \
   -p 3065:3065 -v ./data:/data \
-  aimodcc/agent2api:latest
+  ghcr.io/xiechenghua01/agent2api:latest
 ```
 
 Open `http://<host>:3065` in a browser — the first visit walks you through **registering the admin account**; log in and create an API key in the "Gateway Keys" page for your clients — `http://<host>:3065/v1` is the OpenAI-compatible endpoint (it refuses to forward until the first key exists, then recovers automatically). All state (SQLite database / config / logs) lives in the `./data` volume.
 
-Compose users (this is the whole `docker-compose.yml`; images are published for amd64 and arm64):
+Compose users can use the bundled `docker-compose.yml` as-is:
 
-```yaml
-services:
-  agent2api:
-    image: aimodcc/agent2api:latest
-    container_name: agent2api
-    restart: unless-stopped
-    ports:
-      - "3065:3065"
-    volumes:
-      - ./data:/data
+```bash
+docker compose up -d
+```
+
+The version in its `image:` line is bumped and committed automatically by the workflow whenever upstream publishes a new tag, so upgrading is just:
+
+```bash
+docker compose pull && docker compose up -d
 ```
 
 Environment variables (all optional — nothing needs to be preset):
@@ -115,7 +115,11 @@ Environment variables (all optional — nothing needs to be preset):
 | `AGENT2API_HOST` / `AGENT2API_PROXY_PORT` | Listen address (default `0.0.0.0`) / port (default `3065`) |
 | `AGENT2API_ALLOW_NO_KEY` | Set to `1` to serve `/v1` without any key — private networks only |
 
-Build from source: clone the repo and run `docker compose up -d --build` (the image contains only the gateway and the panel, no Rust toolchain).
+Build from source (the image contains only the gateway and the panel, no Rust toolchain):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
 
 **Web panel capability notes** (all differences stem from having no local desktop client): web login (WorkBuddy / Qoder / Cline), SMS codes and pasted credentials work fully; AutoClaw / CatPaw web-login callbacks hit the machine's own port, so from a remote panel use pasted credentials instead; Raccoon web login and "import desktop login state" are unavailable (use pasted credentials).
 

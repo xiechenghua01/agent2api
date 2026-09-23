@@ -1,0 +1,11 @@
+# 从本地源码构建的覆盖文件，配合主 compose 使用：
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# 只补一条 build: .，image 名仍沿用主文件的 GHCR 名字，所以本地构建出来的
+# 镜像会顶替同名远端镜像，之后直接 `docker compose up -d` 用的就是它。
+# 单独使用本文件没有意义（缺端口、卷、环境变量等定义）。
+
+services:
+  agent2api:
+    build: .

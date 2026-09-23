@@ -1,0 +1,252 @@
+name: docker
+
+# 构建 Agent2API 网关镜像并推送到 GitHub Container Registry（GHCR），
+# 随后把仓库里的 docker-compose.yml 同步成刚构建好的镜像版本。
+#
+# ── 版本跟随上游 tag ──────────────────────────────────────────
+# 镜像版本取**上游**（aimod-cc/agent2api）的最新 tag，构建时检出上游该 tag
+# 的源码 —— 镜像内容与上游 tag 严格对应，本 fork 只承担构建与分发的角色。
+# 本仓库是 fork，分支状态可能与上游不一致，所以不拿 fork 的 HEAD 当版本号。
+#
+# ── 触发方式 ──────────────────────────────────────────────────
+#   · workflow_dispatch：手动触发，可指定 tag、可强制重建
+#   · schedule：每天 03:00 UTC 检查上游是否出了新 tag，有则自动构建
+#   · push：仅当本文件自身改动时（改完工作流立即验证一次）
+#
+# ── 幂等 ──────────────────────────────────────────────────────
+# 构建前先探测 GHCR 上是否已有该版本镜像，已有就跳过构建 —— 定时任务因此
+# 不会重复构建同一个版本（Rust 冷构建约十几分钟）。要重建用 force 输入。
+#
+# ── 为什么不需要配置任何 secret ───────────────────────────────
+# 推镜像用内置 GITHUB_TOKEN 的 packages: write，提交 compose 用它的
+# contents: write。用 GITHUB_TOKEN 推送的提交不会触发新的 workflow run，
+# 所以「同步 compose → 又触发构建」不会成环；提交信息里仍带 [skip ci]
+# 作为双保险。
+#
+# ── 多架构 ────────────────────────────────────────────────────
+# amd64 + arm64 一次构建，两个架构都注册 QEMU/binfmt。
+#
+# Rust 编译本身是交叉编译（builder 阶段 FROM --platform=$BUILDPLATFORM +
+# rustup target），不经过 QEMU，所以这部分保持原生速度；但运行时阶段
+# （FROM debian:bookworm-slim，要跑 apt-get 装 ca-certificates / curl）
+# 没有声明 BUILDPLATFORM，构建 arm64 时那一层只能在 arm64 上执行 ——
+# 也就是必须走 QEMU。少这一步的话 arm64 构建会直接报 exec format error。
+#
+# ── 镜像可见性 ────────────────────────────────────────────────
+# 包随公开仓库默认为 public，所以 compose 拉取不需要任何凭据。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '要构建的上游 tag（留空 = 自动取上游最新）'
+        required: false
+        type: string
+      force:
+        description: '强制重建（即使 GHCR 上已有该版本）'
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: '0 3 * * *'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/docker.yml'
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM: aimod-cc/agent2api
+
+jobs:
+  # ── 解析版本 + 探测镜像是否已存在 ─────────────────────────────
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # 探测已有镜像要用 token 登录 GHCR（包若为私有，匿名探测会失败）
+      packages: read
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      tags: ${{ steps.resolve.outputs.tags }}
+      need_build: ${{ steps.resolve.outputs.need_build }}
+    steps:
+      - name: 解析上游最新 tag
+        id: resolve
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          FORCE: ${{ inputs.force }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          upstream_url="https://github.com/${UPSTREAM}.git"
+
+          # 上游最新稳定 tag：按版本号倒序取第一个，并过滤掉 rc/beta 之类
+          # 的预发布 tag（它们不匹配 vX.Y.Z 的纯数字三段式）。
+          latest=$(git ls-remote --tags --refs --sort=-v:refname "$upstream_url" 'refs/tags/v*' \
+                   | sed 's#.*refs/tags/##' \
+                   | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+                   | head -1)
+          if [ -z "$latest" ]; then
+            echo "::error::未能从 $UPSTREAM 解析出任何稳定 tag"
+            exit 1
+          fi
+
+          # 手动指定则用指定值；否则用上游最新
+          version="${INPUT_VERSION:-$latest}"
+          if ! printf '%s' "$version" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::版本号格式不对：$version（应形如 v2.7.0）"
+            exit 1
+          fi
+
+          # tag 指向的 commit：先按 annotated tag 解引用（^{}），拿不到再退回
+          # 直接读（lightweight tag 只有一行）。写进 OCI 的 revision 标签。
+          sha=$(git ls-remote "$upstream_url" "refs/tags/${version}^{}" | cut -f1)
+          if [ -z "$sha" ]; then
+            sha=$(git ls-remote "$upstream_url" "refs/tags/${version}" | cut -f1)
+          fi
+
+          # 镜像名必须是全小写，GITHUB_REPOSITORY 里的 owner 可能带大写。
+          # 用 tr 而不是 ${VAR,,}：后者是 bash 4+ 语法，本机 bash 3.2 跑不了，
+          # 换成 tr 这段逻辑在哪都能本地复现调试。
+          base="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+
+          # 推三个标签：带 v 的完整版本、不带 v 的同版本、以及 latest。
+          # latest 只在该版本就是上游最新时才推 —— 手动构建旧版本时不应该
+          # 把 latest 回退到旧版本上。
+          tags="${base}:${version}"
+          tags="${tags}"$'\n'"${base}:${version#v}"
+          if [ "$version" = "$latest" ]; then
+            tags="${tags}"$'\n'"${base}:latest"
+          fi
+
+          # 探测该版本镜像是否已经存在。登录失败不致命（公开包可匿名读），
+          # 所以吞掉登录错误继续探测。
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin >/dev/null 2>&1 || true
+          if docker manifest inspect "${base}:${version}" >/dev/null 2>&1; then
+            exists=true
+          else
+            exists=false
+          fi
+
+          need_build=true
+          if [ "$exists" = true ] && [ "$FORCE" != "true" ]; then
+            need_build=false
+          fi
+
+          echo "上游最新 tag : $latest"
+          echo "本次构建版本 : $version"
+          echo "镜像已存在   : $exists"
+          echo "需要构建     : $need_build"
+
+          {
+            echo "version=$version"
+            echo "sha=$sha"
+            echo "need_build=$need_build"
+            echo "tags<<TAGS_EOF"
+            echo "$tags"
+            echo "TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  # ── 构建并推送多架构镜像 ─────────────────────────────────────
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.need_build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # 检出的必须是上游该 tag 的源码，而不是本 fork 的分支状态 ——
+      # 镜像内容与 tag 严格对应，这一点是这套流程的前提。
+      - name: 检出上游源码
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.UPSTREAM }}
+          ref: ${{ needs.prepare.outputs.version }}
+
+      - name: 准备 QEMU（运行时阶段 arm64 要跑 apt-get）
+        uses: docker/setup-qemu-action@v4
+
+      - name: 准备 buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ needs.prepare.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.sha }}
+          # 不生成 provenance/SBOM attestation：多出来的 attestation manifest
+          # 会让部分较旧的 Docker 客户端 pull 时报 unknown manifest，收益
+          # 不抵兼容性代价。
+          provenance: false
+          # 缓存整个 Rust 依赖树（Dockerfile 里有专门的桩依赖层）。
+          # 命中后构建从十几分钟降到几分钟。
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 把 compose 指向新镜像 ────────────────────────────────────
+  # 镜像已存在（跳过构建）时也要跑：构建可能早已完成，只是 compose 还没跟上。
+  # 但构建失败时不能跑 —— 否则 compose 会指向一个并不存在的镜像。
+  sync-compose:
+    needs: [prepare, build]
+    if: ${{ always() && needs.prepare.result == 'success'
+            && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: 同步镜像版本
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          base="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+
+          # 只改 image 行的标签部分，其余（注释、端口、环境变量、卷）原样保留
+          sed -i -E "s#^([[:space:]]*image:[[:space:]]*)${base}:[^[:space:]]*#\1${base}:${VERSION}#" docker-compose.yml
+
+          # sed 匹配不到就静默什么都不做，所以这里必须回读确认。
+          # 用 -F 做固定字符串匹配：镜像名里的 '.' 当正则用会变成通配，
+          # 校验就成了摆设。
+          grep -Fq "image: ${base}:${VERSION}" docker-compose.yml \
+            || { echo "::error::docker-compose.yml 里没找到形如 'image: ${base}:<版本>' 的行"; exit 1; }
+
+          git diff --stat -- docker-compose.yml || true
+
+      - name: 提交改动
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- docker-compose.yml; then
+            echo "docker-compose.yml 已指向 $VERSION，无需提交"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docker-compose.yml
+          git commit -m "chore(docker): 镜像版本同步到 ${VERSION} [skip ci]"
+          git push

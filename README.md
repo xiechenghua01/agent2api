@@ -89,26 +89,26 @@ print(resp.choices[0].message.content)
 
 ## Docker 部署
 
+镜像由本仓库的 GitHub Actions 构建（`.github/workflows/docker.yml`），推送到 GHCR，版本跟随上游 `aimod-cc/agent2api` 的最新 tag；amd64 / arm64 都有。包随公开仓库默认为 public，拉取不需要凭据。
+
 ```bash
 docker run -d --name agent2api --restart unless-stopped \
   -p 3065:3065 -v ./data:/data \
-  aimodcc/agent2api:latest
+  ghcr.io/xiechenghua01/agent2api:latest
 ```
 
 浏览器打开 `http://<主机>:3065`，首次进入会引导**注册管理员账号**（后续登录用它）；登录后在「网关 Key」页创建一把 API Key 给客户端用 —— `http://<主机>:3065/v1` 即 OpenAI 兼容端点，未建 Key 前拒绝转发，建第一把后自动恢复。所有状态（SQLite 库 / 配置 / 日志）都落在 `./data` 一个卷里。
 
-compose 用户（`docker-compose.yml` 全文就这么多；amd64 / arm64 都有镜像）：
+compose 用户直接用仓库里的 `docker-compose.yml`：
 
-```yaml
-services:
-  agent2api:
-    image: aimodcc/agent2api:latest
-    container_name: agent2api
-    restart: unless-stopped
-    ports:
-      - "3065:3065"
-    volumes:
-      - ./data:/data
+```bash
+docker compose up -d
+```
+
+其中 `image:` 的版本号由工作流在上游发新 tag 后自动改好并提交，所以升级就是：
+
+```bash
+docker compose pull && docker compose up -d
 ```
 
 环境变量（都可选，不需要预置任何东西）：
@@ -120,7 +120,11 @@ services:
 | `AGENT2API_HOST` / `AGENT2API_PROXY_PORT` | 监听地址（默认 `0.0.0.0`）/ 端口（默认 `3065`） |
 | `AGENT2API_ALLOW_NO_KEY` | 置 `1` 关闭 fail-closed（未配 Key 也放行 `/v1`，仅限纯内网） |
 
-从源码构建：克隆本仓库后 `docker compose up -d --build`（镜像里只有网关与面板，不含 Rust 工具链）。
+从源码构建（镜像里只有网关与面板，不含 Rust 工具链）：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
 
 **网页端功能差异**（都源于「没有本机桌面客户端」）：网页登录（WorkBuddy / Qoder / Cline）、手机验证码、粘贴凭证完全可用；AutoClaw / CatPaw 网页登录的回调打本机端口，远程面板请改用粘贴凭证；小浣熊网页登录与「导入本机桌面端登录态」不可用（用填写凭证）。
 
