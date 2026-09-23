@@ -89,10 +89,16 @@
        ② label 覆盖登录页的全局表单标签样式（那个 margin: 14px 0 5px 与
           灰色会把「我不是机器人」压下去、变灰）—— 用 altcha-widget 前缀
           提高特异性盖过全局规则；
-       ③ 隐藏品牌 footer（altcha.org 外链，与 OmniProxy 的取用方式一致）。 */
-    altcha-widget { display: block; margin: 20px 0; }
-    /* 官方脚本注入的全局 button 样式带 margin-top: 10px，会破坏下方间距对称 */
-    #submit { margin-top: 0; }
+       ③ 隐藏品牌 footer（altcha.org 外链，与 OmniProxy 的取用方式一致）；
+       ④ 只留上边距（与密码框的 20px），下边距交给 #submit —— 两者的间隔
+          统一由按钮的 margin-top 提供，这样校验关闭、widget 被移除后
+          按钮与密码框之间仍有 20px，不会贴在一起。 */
+    altcha-widget { display: block; margin: 20px 0 0; }
+    /* 官方脚本注入的全局 button 样式带 margin-top: 10px，会破坏下方间距对称；
+       id 选择器特异性足够盖过它。这里给 20px 而不是 0：widget 在时它接在
+       widget 的 0 下边距后面正好 20px，widget 被移除时（校验关闭）它是
+       密码框与按钮之间唯一的间隔来源。 */
+    #submit { margin-top: 20px; }
     altcha-widget .altcha { width: fit-content; max-width: 100%; margin: 0 auto; box-sizing: border-box; }
     altcha-widget .altcha-label label { margin: 0; font-size: 13px; color: inherit; }
     altcha-widget div:has(> .altcha-logo) { display: none; }
@@ -152,10 +158,17 @@
       // ── ALTCHA 官方 widget（proof-of-work，协议见 server::altcha）──
       // 点一下「我不是机器人」→ widget 领题并在后台算 → 绿勾「验证成功」，
       // verified 事件给出随提交的 payload。payload 一次性（服务器用后即焚）：
-      // 提交失败要 widget.reset() 重新验证。网关关闭了校验时领题回 400，
-      // 整个 widget 隐藏，提交不带 payload。
+      // 提交失败要 widget.reset() 重新验证。
+      //
+      // 网关关闭了校验时（领题回 400）把整个 widget **移出 DOM**，而不是
+      // display:none 藏起来 —— widget 内部渲染的 checkbox 带 required，
+      // 藏起来它照样参与表单验证，浏览器会因必填项未满足直接拦下提交：
+      // click 正常触发、submit 事件压根不派发、按钮无变化也无任何提示，
+      // 表现就是「点了没反应」。移出 DOM 才能让 required 一并消失。
       var captchaPayload = null;
       var widget = document.getElementById('altcha');
+      // 校验是否开启（探测未完成前按开处理，保守：不能放行一个可能需要校验的提交）
+      var captchaRequired = true;
 
       widget.addEventListener('verified', function (event) {
         captchaPayload = (event.detail && event.detail.payload) || null;
@@ -164,9 +177,14 @@
         captchaPayload = null;
       });
 
-      // 探测开关：未启用时领题回 400，隐藏验证行（提交自然不带 payload）
+      // 探测开关：未启用时领题回 400，移除验证行（提交自然不带 payload）
       fetch('/api/panel/captcha').then(function (resp) {
-        if (!resp.ok) widget.style.display = 'none';
+        if (!resp.ok) {
+          captchaRequired = false;
+          captchaPayload = null;
+          widget.remove();
+          widget = null;
+        }
       }).catch(function () { /* 网关不可达：widget 自会显示错误 */ });
 
       // 决定模式：没有任何管理员 → 注册；否则登录
@@ -202,12 +220,12 @@
           errorEl.textContent = (detail && detail.message) || '请求失败，请重试';
           button.disabled = false;
           captchaPayload = null; // payload 是一次性的：失败后重新验证
-          widget.reset();
+          if (widget) widget.reset(); // 校验关闭时 widget 已被移除，不能再 reset
         }).catch(function () {
           errorEl.textContent = '无法连接网关';
           button.disabled = false;
           captchaPayload = null;
-          widget.reset();
+          if (widget) widget.reset();
         });
       }
 
@@ -220,7 +238,9 @@
           errorEl.textContent = '请填写账号与密码';
           return;
         }
-        if (widget.style.display !== 'none' && !captchaPayload) {
+        // 用标志而不是 widget.style.display 判断：校验关闭时 widget 已被
+        // 移出 DOM，widget 会是 null，读它的 style 会直接抛错。
+        if (captchaRequired && !captchaPayload) {
           errorEl.textContent = '请先勾选「我不是机器人」完成验证';
           return;
         }
